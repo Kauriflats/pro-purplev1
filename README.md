@@ -1,599 +1,311 @@
-# ListHouze Billing & Entitlements Test Plan
 
-**Version:** 1.0
-**Date:** 2025-12-26
-**Author:** Senior Full-Stack Engineer + Supabase/Stripe Specialist
+# List Houze - Real Estate Platform
 
----
+A modern real estate platform built with React, TypeScript, and Supabase.
 
-## Overview
+## Environment Variables
 
-This document provides comprehensive testing procedures for the Stripe billing integration, entitlements enforcement, and system reliability features implemented for ListHouze.
+remium, mobile-first real-estate platform with Houzez-inspired UX, real-time MRI VaultRE sync, role-based portals (Admin, Agency Owner, Agent, Seller, Customer), Google Maps search, CRM, and SEO-first pages. Black & Silver brand. Fast. Accessible. Deploys on Vercel.
 
----
+✨ Highlights
 
-## Pre-Test Setup
+Houzez-style UI (not copied; rebuilt): crisp cards, filter drawer, list⇄map, sticky CTAs on mobile
 
-### Required Environment Variables
+Real-time VaultRE sync: properties & agents (images downloaded to our bucket — no hotlinking)
 
-Ensure the following secrets are configured in Supabase Edge Functions settings:
+Full RBAC: admin, agency_owner, agent, seller, customer (visitor/buyer/renter)
 
-```bash
-STRIPE_SECRET_KEY=sk_test_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=eyJ...
-SITE_URL=https://listhouze.com
-```
+Portals
 
-### Stripe Dashboard Configuration
+Admin: Site Builder (edit every public section), Users & Roles, Sync, CRM, SEO, Visibility controls
 
-1. Log into Stripe Dashboard
-2. Go to **Developers → Webhooks**
-3. Add endpoint: `https://your-project.supabase.co/functions/v1/billing-webhook`
-4. Select events (see Webhook Setup section below)
+Owner: agency/team, routing rules, reports
 
-### Database Migration
+Agent: listings, open homes, leads/tasks, profile (override-safe)
 
-Apply the entitlement enforcement migration:
+Seller: property dashboard (open homes, enquiries, views—admin decides what’s visible)
 
-```bash
-# Ensure migration is applied
-supabase db push
+Customer: saved properties, saved searches + alerts (immediate/daily/weekly)
 
-# Or manually apply
-psql -f supabase/migrations/20251226124513_entitlement_enforcement.sql
-```
+Maps & Search: Google Places Autocomplete (AU) + Maps clustering + “search this area”
 
----
+SEO + Perf: SSR/ISR or SPA best practices, JSON-LD, sitemaps, canonical; LCP < 2.5s target
 
-## Test Suite
+Accessibility: WCAG-minded components, keyboard flow, strong contrast (Black/Silver)
 
-### 1. Stripe Environment Validation
+🧱 Tech Stack
 
-**Objective:** Verify environment secrets are validated on Edge Function invocation
+Frontend: React + TypeScript + Tailwind + shadcn/ui
 
-#### Test 1.1: Missing STRIPE_SECRET_KEY
+Backend: Vercel Serverless Functions (/api/**)
 
-**Steps:**
-1. Temporarily remove `STRIPE_SECRET_KEY` from Supabase secrets
-2. Call `/billing-start-checkout` Edge Function
-3. Verify response is HTTP 500 with error:
-   ```json
-   {
-     "error": "Configuration error",
-     "message": "Missing required environment variable: STRIPE_SECRET_KEY",
-     "hint": "Please ensure all required Stripe secrets are configured in Supabase Edge Function settings"
-   }
-   ```
+DB/ORM: Postgres (Neon/Supabase) + Prisma
 
-**Expected Result:** ✅ Function fails loudly with clear error message
+Auth: Supabase Auth (Google OAuth + Email/Password)
 
-#### Test 1.2: Missing STRIPE_WEBHOOK_SECRET
+Storage: S3/R2 (or Supabase Storage) for media (VaultRE images downloaded & served locally)
 
-**Steps:**
-1. Temporarily remove `STRIPE_WEBHOOK_SECRET` from Supabase secrets
-2. Trigger a webhook event from Stripe (or use Stripe CLI)
-3. Verify webhook returns HTTP 500 with error about missing secret
+Email: Resend/SMTP (invites, alerts, notifications)
 
-**Expected Result:** ✅ Webhook fails and refuses to process events without signature verification
+Design target is Houzez-like look & flow only. We do not reuse or copy any theme code.
 
-#### Test 1.3: All Secrets Present
+📦 Project Structure
+/src
+  /components
+    /property        # PropertyCard, Gallery, Specs
+    /search          # FilterDrawer, Chips, List↔Map toggle
+    /auth            # AuthGuard, BottomAuthBar, forms
+    /home            # HeroSearchSection, FeaturedProperties
+    /layout          # ScrollToTop, page scaffolding
+  /pages             # SPA pages (Home, Buy/Rent/Sold/Leased, Property, Agents, About, Contact, Auth)
+  /admin             # Admin portal screens (Site Builder, Users, Properties, Sync, SEO, Logs)
+  /agent             # Agent portal
+  /owner             # Agency Owner portal
+  /seller            # Seller portal
+  /lib               # vaultre client, storage, email, search builders, visibility filters
+  /db                # prisma client & seeds
+/api
+  /webhooks/vaultre.ts       # signature verify + upsert enqueue
+  /cron/vaultre-sync.ts      # 15-min incremental sync
+  /cron/alerts-daily.ts      # saved-search digests
+  /cron/alerts-weekly.ts
+  /admin/sync-*.ts           # manual sync triggers (role-guarded)
+prisma/schema.prisma
+vercel.json
 
-**Steps:**
-1. Ensure all secrets are configured
-2. Call `/billing-start-checkout` with valid auth token
-3. Verify checkout session is created successfully
+🔐 Roles & Portals (at a glance)
+Role	Portal Path	Can See / Do
+Admin	/admin/**	Site Builder, Users/Roles, Properties, Agents, Sellers, CRM, Sync, SEO, Logs, Visibility Matrix
+Owner	/owner/**	Agency profile, team, routing rules, reports
+Agent	/agent/**	My listings, open homes, leads/tasks, profile
+Seller	/seller/**	Property dashboard (open homes, enquiries, views) per admin visibility
+Customer	/account/**	Saved properties, saved searches + alerts, enquiries & bookings
 
-**Expected Result:** ✅ Function executes normally
+Visibility Matrix (admin-controlled): decide which metrics (open homes, enquiries, views, saves, days on market…) are visible to which roles, plus per-property overrides.
 
----
+⚙️ Requirements
 
-### 2. Stripe Webhook Event Coverage
+Node.js 18+
 
-**Objective:** Verify all 6 required webhook events are handled correctly
+Postgres 14+ (Neon/Supabase recommended)
 
-#### Test 2.1: checkout.session.completed (Subscription)
+S3-compatible storage (R2 / Supabase Storage)
 
-**Steps:**
-1. Start a subscription checkout (e.g., `individual_renewal` plan)
-2. Complete payment in Stripe test mode
-3. Check `subscriptions` table for new row:
-   - `subject_type` = 'user'
-   - `subject_id` = user's UUID
-   - `status` = 'active'
-   - `stripe_subscription_id` populated
-   - `stripe_customer_id` populated
+Vercel account (for hosting & crons)
 
-**Expected Result:** ✅ Subscription record created in DB
+Supabase project (Auth + optional DB)
 
-#### Test 2.2: checkout.session.completed (One-Time Payment)
+Google Maps API key (Places + Maps JS)
 
-**Steps:**
-1. Start checkout for one-time purchase (e.g., $99 sale listing)
-2. Complete payment in Stripe test mode
-3. Check `one_time_purchases` table for new row:
-   - `user_id` populated
-   - `purchase_type` = 'listing_add_on'
-   - `status` = 'active'
-   - `stripe_payment_intent_id` populated
+Resend/SMTP credentials (emails)
 
-**Expected Result:** ✅ Purchase record created in DB
+VaultRE API Key (Integrator) + Access Token (Office Integrations → Third-Party Access)
 
-#### Test 2.3: customer.subscription.created
+🔧 Environment Variables
 
-**Steps:**
-1. Use Stripe CLI to trigger event:
-   ```bash
-   stripe trigger customer.subscription.created
-   ```
-2. Ensure subscription metadata includes `user_id` and `plan_type`
-3. Check `subscriptions` table for record
+Create .env.local (dev) and set the same keys in Vercel Project Settings:
 
-**Expected Result:** ✅ Subscription created (similar to checkout.session.completed)
+# Public (client needs these)
+VITE_PUBLIC_SITE_URL=https://silverkeyrealty.com.au
+VITE_SUPABASE_URL=...
+VITE_SUPABASE_ANON_KEY=...
+VITE_GOOGLE_MAPS_API_KEY=...
 
-#### Test 2.4: customer.subscription.updated
+# Server (never expose to client)
+DATABASE_URL=postgres://user:pass@host/db
+S3_ENDPOINT=...
+S3_REGION=ap-southeast-2
+S3_BUCKET=skr-media
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
 
-**Steps:**
-1. Update an existing subscription in Stripe (e.g., change status to `past_due`)
-2. Webhook should update subscription status in DB
-3. Verify `subscriptions.status` matches Stripe status
+# VaultRE (MRI)
+VAULTRE_ACCOUNT_ID=7040
+VAULTRE_INTEGRATION_NAME="SilverKey Realty - Ajuba Tech"
+VAULTRE_API_KEY=***           # server-only
+VAULTRE_ACCESS_TOKEN=***      # server-only
+VAULTRE_BASE_URL=https://ap-southeast-2.api.vaultre.com.au/api/v1.3
+VAULTRE_WEBHOOK_TOLERANCE_MS=300000
 
-**Expected Result:** ✅ Subscription status synced correctly
+# Email
+RESEND_API_KEY=...
+EMAIL_FROM="SilverKey Alerts <alerts@silverkeyrealty.com.au>"
 
-#### Test 2.5: customer.subscription.deleted
 
-**Steps:**
-1. Cancel a subscription in Stripe Dashboard
-2. Webhook triggers and updates DB
-3. Verify `subscriptions.status` = 'canceled'
-4. Verify `canceled_at` timestamp is set
+VaultRE Compliance:
+Always send X-Api-Key and Authorization: Bearer <token> headers; respect rate limits; do not hotlink images (download & serve locally); verify webhooks via HMAC-SHA512 (X-VaultRE-Signature, payload t.rawBody).
 
-**Expected Result:** ✅ Subscription marked as canceled
+🚀 Quick Start (Local)
+# 1) Install
+npm i
 
-#### Test 2.6: invoice.paid
+# 2) Generate & migrate DB
+npx prisma generate
+npx prisma migrate dev --name init
 
-**Steps:**
-1. Trigger successful invoice payment (happens automatically on subscription renewal)
-2. Webhook updates subscription period dates
-3. Verify `current_period_start` and `current_period_end` match invoice periods
+# 3) (optional) Seed: creates an admin and sample content
+npm run seed
 
-**Expected Result:** ✅ Subscription period updated
+# 4) Dev server (Vite)
+npm run dev
 
-**Note:** Webhook also handles `invoice.payment_succeeded` as an alias for backwards compatibility.
 
-#### Test 2.7: invoice.payment_failed
+Open http://localhost:5173
 
-**Steps:**
-1. Use Stripe test card that triggers payment failure (e.g., `4000 0000 0000 0341`)
-2. Invoice payment fails
-3. Webhook updates `subscriptions.status` = 'past_due'
+Default admin (if seeded): shown in terminal after npm run seed. Change immediately.
 
-**Expected Result:** ✅ Subscription marked as past_due
+🧭 Core Scripts
+npm run dev            # start local app
+npm run build          # production build
+npm run preview        # preview local prod build
+npm run lint           # code linting
+npm run test           # unit tests
+npm run test:e2e       # Playwright E2E
+npm run prisma:studio  # Prisma Studio
+npm run seed           # seed demo data (safe)
 
----
+🏗️ Deployment (Vercel)
 
-### 3. Customer Portal
+vercel.json
 
-**Objective:** Verify users can access Stripe Customer Portal to manage subscriptions
+{
+  "version": 2,
+  "builds": [
+    { "src": "index.html", "use": "@vercel/static-build", "config": { "distDir": "dist" } },
+    { "src": "api/**/*.[tj]s", "use": "@vercel/node" }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ],
+  "crons": [
+    { "path": "/api/cron/vaultre-sync", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/alerts-daily", "schedule": "0 8 * * *" },
+    { "path": "/api/cron/alerts-weekly", "schedule": "0 8 * * MON" }
+  ]
+}
 
-#### Test 3.1: Open Customer Portal
 
-**Steps:**
-1. Log in as a user with an active subscription
-2. Navigate to `/settings/billing`
-3. Click "Manage Subscription" button
-4. Verify redirect to Stripe Customer Portal
-5. Verify portal shows:
-   - Current subscription details
-   - Cancel subscription option
-   - Update payment method option
+Vercel Settings
 
-**Expected Result:** ✅ Portal opens successfully and displays subscription
+Framework preset: Vite (or Other)
 
-#### Test 3.2: Cancel Subscription via Portal
+Build command: npm run build
 
-**Steps:**
-1. In Customer Portal, cancel subscription
-2. Confirm cancellation
-3. Return to `/settings/billing`
-4. Verify subscription shows as canceled
+Output directory: dist
 
-**Expected Result:** ✅ Cancellation reflected in app
+Add env vars from “Environment Variables”
 
-#### Test 3.3: Manual Billing (No Portal Access)
+Production domain: silverkeyrealty.com.au
 
-**Steps:**
-1. Create a manual subscription (set `is_manual` = true in DB)
-2. Navigate to `/settings/billing`
-3. Verify "Manage Subscription" button is hidden
+🔄 VaultRE Integration (Overview)
 
-**Expected Result:** ✅ Portal button hidden for manual subscriptions
+Initial ingest: properties (sale/rent + sold/leased), agents (users)
 
----
+Webhooks: /api/webhooks/vaultre
 
-### 4. Database Entitlement Enforcement
+Verify X-VaultRE-Signature with HMAC-SHA512 (secret = API key)
 
-**Objective:** Verify triggers block unauthorized publish/renew operations at DB level
+Reject stale timestamps (VAULTRE_WEBHOOK_TOLERANCE_MS)
 
-#### Test 4.1: Individual - First Sale Listing (FREE)
+Polling fallback: /api/cron/vaultre-sync every 15 min (updatedSince watermark)
 
-**Steps:**
-1. Log in as individual user with 0 active sale listings
-2. Create new property (listing_category = 'sale', status = 'draft')
-3. Update status to 'active'
-4. Verify update succeeds without error
+Images: download to S3_BUCKET; re-download only if modtime changed
 
-**Expected Result:** ✅ First sale listing published for free
+Enquiries: public form → local Lead + POST to VaultRE (Add/Edit Enquiries)
 
-**DB Check:**
-```sql
-SELECT expires_at FROM properties WHERE id = '[listing_id]';
--- Should be ~2 months from now
-```
+Agent overrides: overrideMask ensures admin/agent edits persist across syncs
 
-#### Test 4.2: Individual - Second Sale Listing (REQUIRES PAYMENT)
+🧠 Site Builder (Admin → Control Every Public Section)
 
-**Steps:**
-1. User already has 1 active sale listing
-2. Create another sale listing (draft)
-3. Attempt to update status to 'active' WITHOUT payment
-4. Verify update is BLOCKED by trigger with error:
-   ```
-   Payment required for additional sale listings
-   HINT: One-time payment of $99 required
-   ```
+ComponentBlock model: key, variant, data, published
 
-**Expected Result:** ✅ Trigger blocks publish, raises exception
+Blocks: home.hero, home.featuredListings, home.suburbs, home.featuredAgents, about.story, about.values, about.stats, about.team, global.header, global.footer, global.announcement
 
-#### Test 4.3: Individual - Second Sale Listing WITH Payment
+Features: live preview, publish/draft, drag-reorder, role visibility flags
 
-**Steps:**
-1. Complete $99 one-time payment for the specific listing
-2. Record created in `one_time_purchases` with `listing_id`
-3. Retry update status to 'active'
-4. Verify update SUCCEEDS
+📣 Saved Searches & Alerts
 
-**Expected Result:** ✅ Publish allowed after payment
+Favourites: /api/saved (POST/DELETE)
 
-#### Test 4.4: Individual - Rental Listings (Up to 3 FREE)
+Saved Searches: /api/saved-searches (CRUD), frequency Off/Immediate/Daily/Weekly
 
-**Steps:**
-1. User has 0 active rental listings
-2. Create and publish 3 rental properties
-3. Verify all 3 publish successfully without payment
+Immediate: triggered on property upsert
 
-**Expected Result:** ✅ Up to 3 rentals allowed for free
+Daily/Weekly: email digests via cron endpoints
 
-#### Test 4.5: Individual - 5th Rental (REQUIRES LANDLORD PRO)
+🏡 Seller & Agent Metrics (Admin-controlled)
 
-**Steps:**
-1. User has 4 active rental listings
-2. Create 5th rental listing
-3. Attempt to publish WITHOUT Landlord Pro subscription
-4. Verify blocked with error:
-   ```
-   Landlord Pro subscription required for 5+ rental listings
-   HINT: Subscribe to Landlord Pro for $29/month
-   ```
+Visibility Matrix (global) & Per-Property overrides decide which roles can see:
 
-**Expected Result:** ✅ Trigger blocks publish
+Open homes (past/upcoming) + attendance (optional)
 
-#### Test 4.6: Individual - 5th Rental WITH Landlord Pro
+Enquiries count
 
-**Steps:**
-1. Subscribe to `landlord_pro` plan
-2. Retry publishing 5th rental listing
-3. Verify update SUCCEEDS
+Views, saves/shortlists
 
-**Expected Result:** ✅ Publish allowed with subscription
+Days on market, price changes
 
-#### Test 4.7: Agency - No Subscription
+Enforcement via filterByVisibility(role, rules, overrides) in all dashboard APIs.
 
-**Steps:**
-1. Create organization
-2. Create property with `organization_id` set
-3. Attempt to publish (status = 'active')
-4. Verify blocked with error:
-   ```
-   Agency subscription required to publish listings
-   HINT: Subscribe to Agency Starter or Agency Pro plan
-   ```
+🧭 UX Polishing Defaults
 
-**Expected Result:** ✅ Trigger blocks agency publish without subscription
+Scroll to top on navigation (<ScrollToTop />)
 
-#### Test 4.8: Agency - Within Listing Cap
+Sticky bottom Login / Sign-up bar for guests (Google + Email)
 
-**Steps:**
-1. Subscribe to `agency_starter` (cap = 100 listings)
-2. User has 50 active listings
-3. Publish new listing
-4. Verify update SUCCEEDS
+Error boundaries + branded 404/500
 
-**Expected Result:** ✅ Publish allowed within cap
+Skeleton loaders, accessible focus rings, ARIA labels
 
-#### Test 4.9: Agency - Listing Cap Reached
+Consistent CTAs (Call / Enquire / Book) on property detail
 
-**Steps:**
-1. Organization has 100 active listings (cap reached)
-2. Attempt to publish 101st listing
-3. Verify blocked with error:
-   ```
-   Listing cap reached (100 / 100)
-   HINT: Upgrade your plan for more listings
-   ```
+🔒 Security & Privacy
 
-**Expected Result:** ✅ Trigger blocks publish at cap
+Server-only secrets (VaultRE keys/tokens, DB, email)
 
-#### Test 4.10: Renewal - Sale Listing After Trial
+Webhook signature + timestamp verification
 
-**Steps:**
-1. Create sale listing with `expires_at` in the past
-2. Attempt to extend `expires_at` (renew) WITHOUT renewal subscription
-3. Verify blocked with error:
-   ```
-   Renewal subscription required to keep listing active
-   HINT: Subscribe to Individual Renewal for $15/month
-   ```
+Rate limit public POSTs; spam checks on forms
 
-**Expected Result:** ✅ Trigger blocks renewal without subscription
+AuditLog for sensitive actions (role changes, visibility toggles, sync runs)
 
-#### Test 4.11: Renewal - WITH Subscription
+If Supabase DB: enable RLS; keep policies strict
 
-**Steps:**
-1. Subscribe to `individual_renewal` plan
-2. Retry extending `expires_at`
-3. Verify update SUCCEEDS
+🧪 Testing
 
-**Expected Result:** ✅ Renewal allowed with subscription
+Unit: utilities (formatting, search builder, visibility filter)
 
----
+E2E (Playwright): RBAC gates, admin Site Builder, agent routing (unique slugs), seller dashboard visibility, saved searches & alerts, sync happy path
 
-### 5. Direct Database Bypass Test
+Lighthouse (mobile): Perf ≥ 85, SEO ≥ 95, CLS < 0.1
 
-**Objective:** Verify entitlement enforcement even when UI is bypassed
+🛠️ Troubleshooting
 
-#### Test 5.1: Direct Supabase Client Update
+VaultRE 401/403: check API key/token; scopes enabled (View Properties, View Contacts, View Enquiries, Add/Edit Enquiries, View Users)
 
-**Steps:**
-1. Use Supabase client directly (e.g., from browser console):
-   ```javascript
-   const { data, error } = await supabase
-     .from('properties')
-     .update({ status: 'active' })
-     .eq('id', 'some-listing-id-without-entitlement')
-   ```
-2. Verify update is BLOCKED by trigger
-3. Error should be in `error.message`
+429 rate limits: backoff; reduce concurrency; cache list pages
 
-**Expected Result:** ✅ Trigger enforces entitlement even for direct DB calls
+Images not showing: confirm S3 credentials, bucket CORS, public read or signed URLs
 
----
+Google OAuth: add correct redirect URL in Supabase Auth → Google Provider
 
-### 6. Error Boundary
+Map not loading: domain restrictions on Google key; enable Places + Maps JS
 
-**Objective:** Verify React Error Boundary catches runtime errors
+📄 License
 
-#### Test 6.1: Trigger Runtime Error
+Proprietary / Confidential — © AjubaTech. All rights reserved.
+Distribution or reuse requires written permission.
 
-**Steps:**
-1. Temporarily introduce an error (e.g., undefined variable in a component)
-2. Navigate to the page
-3. Verify Error Boundary displays:
-   - Friendly error message
-   - "Reload Page" button
-   - "Report Issue" button (opens mailto:support@listhouze.com)
+🙌 Acknowledgements
 
-**Expected Result:** ✅ Error Boundary catches error and shows fallback UI
+MRI VaultRE (data source & API)
 
-#### Test 6.2: Reload After Error
+Google Maps Platform
 
-**Steps:**
-1. Click "Reload Page" button
-2. Verify page reloads successfully
+📬 Contact
 
-**Expected Result:** ✅ Page reloads
+AjubaTech — smart real-estate software & integrations
+✉️ info@ajubatech.com
 
-#### Test 6.3: Report Issue
-
-**Steps:**
-1. Click "Report Issue" button
-2. Verify mailto link opens with pre-filled error details
-
-**Expected Result:** ✅ Email client opens with error report
-
----
-
-### 7. Toast Notification Consistency
-
-**Objective:** Verify unified toast system works correctly
-
-#### Test 7.1: Success Notification
-
-**Steps:**
-1. Trigger success action (e.g., save profile)
-2. Use `notify.success('Profile saved')` in code
-3. Verify Sonner toast appears with success styling
-
-**Expected Result:** ✅ Success toast displayed
-
-#### Test 7.2: Error Notification
-
-**Steps:**
-1. Trigger error (e.g., DB constraint violation)
-2. Use `notifyDatabaseError(error, 'Failed to publish')` in code
-3. Verify toast shows user-friendly error message
-
-**Expected Result:** ✅ Error toast displayed with formatted message
-
-#### Test 7.3: Database Error Formatting
-
-**Steps:**
-1. Trigger various DB errors:
-   - Entitlement trigger error
-   - Unique constraint violation (23505)
-   - Foreign key violation (23503)
-   - Permission error (42501)
-2. Verify `formatDatabaseError()` converts to user-friendly messages
-
-**Expected Result:** ✅ All errors formatted correctly
-
----
-
-### 8. Expired Listing Cron Job
-
-**Objective:** Verify cron job archives expired listings automatically
-
-#### Test 8.1: Manual Cron Invocation
-
-**Steps:**
-1. Create a test listing with:
-   - `status` = 'active'
-   - `expires_at` = yesterday's date
-2. Manually invoke Edge Function:
-   ```bash
-   curl -X POST https://your-project.supabase.co/functions/v1/check-expired-listings \
-     -H "Authorization: Bearer SUPABASE_ANON_KEY"
-   ```
-3. Verify response:
-   ```json
-   {
-     "success": true,
-     "message": "Archived 1 expired listing(s)",
-     "archived_count": 1,
-     "archived_listings": [...]
-   }
-   ```
-4. Verify listing status changed to 'archived'
-
-**Expected Result:** ✅ Expired listing archived
-
-#### Test 8.2: No Expired Listings
-
-**Steps:**
-1. Ensure no listings have expired
-2. Invoke cron function
-3. Verify response:
-   ```json
-   {
-     "success": true,
-     "message": "No expired listings found",
-     "archived_count": 0
-   }
-   ```
-
-**Expected Result:** ✅ Function completes with no errors
-
-#### Test 8.3: Schedule Cron (Supabase Dashboard)
-
-**Steps:**
-1. Go to Supabase Dashboard → Edge Functions → Cron
-2. Create new cron job:
-   - Function: `check-expired-listings`
-   - Schedule: `0 0 * * *` (daily at midnight UTC)
-3. Wait for next execution or trigger manually
-4. Verify cron runs successfully
-
-**Expected Result:** ✅ Cron scheduled and runs automatically
-
----
-
-## Test Execution Checklist
-
-Use this checklist to track test execution:
-
-### Phase 1: Stripe
-- [ ] 1.1: Missing STRIPE_SECRET_KEY
-- [ ] 1.2: Missing STRIPE_WEBHOOK_SECRET
-- [ ] 1.3: All Secrets Present
-- [ ] 2.1: checkout.session.completed (Subscription)
-- [ ] 2.2: checkout.session.completed (One-Time)
-- [ ] 2.3: customer.subscription.created
-- [ ] 2.4: customer.subscription.updated
-- [ ] 2.5: customer.subscription.deleted
-- [ ] 2.6: invoice.paid
-- [ ] 2.7: invoice.payment_failed
-- [ ] 3.1: Open Customer Portal
-- [ ] 3.2: Cancel Subscription via Portal
-- [ ] 3.3: Manual Billing (No Portal Access)
-
-### Phase 2: Entitlements
-- [ ] 4.1: Individual - First Sale Listing (FREE)
-- [ ] 4.2: Individual - Second Sale Listing (BLOCKED)
-- [ ] 4.3: Individual - Second Sale Listing WITH Payment
-- [ ] 4.4: Individual - Rental Listings (Up to 3 FREE)
-- [ ] 4.5: Individual - 5th Rental (BLOCKED)
-- [ ] 4.6: Individual - 5th Rental WITH Landlord Pro
-- [ ] 4.7: Agency - No Subscription (BLOCKED)
-- [ ] 4.8: Agency - Within Listing Cap
-- [ ] 4.9: Agency - Listing Cap Reached (BLOCKED)
-- [ ] 4.10: Renewal - WITHOUT Subscription (BLOCKED)
-- [ ] 4.11: Renewal - WITH Subscription
-- [ ] 5.1: Direct Database Bypass Test
-
-### Phase 3: Reliability
-- [ ] 6.1: Trigger Runtime Error
-- [ ] 6.2: Reload After Error
-- [ ] 6.3: Report Issue
-- [ ] 7.1: Success Notification
-- [ ] 7.2: Error Notification
-- [ ] 7.3: Database Error Formatting
-- [ ] 8.1: Manual Cron Invocation
-- [ ] 8.2: No Expired Listings
-- [ ] 8.3: Schedule Cron
-
----
-
-## Troubleshooting
-
-### Webhook Not Receiving Events
-
-1. Check Stripe webhook endpoint URL is correct
-2. Verify `STRIPE_WEBHOOK_SECRET` matches Stripe Dashboard
-3. Check Supabase Edge Function logs for errors
-4. Use Stripe CLI to test locally:
-   ```bash
-   stripe listen --forward-to localhost:54321/functions/v1/billing-webhook
-   ```
-
-### Trigger Errors Not Appearing
-
-1. Check migration was applied: `SELECT * FROM pg_trigger WHERE tgname = 'trg_properties_publish_guard';`
-2. Verify functions exist: `SELECT * FROM pg_proc WHERE proname LIKE 'fn_can_%';`
-3. Check RLS is not preventing trigger from running
-4. Ensure user is authenticated (triggers skip for service role)
-
-### Cron Not Running
-
-1. Verify cron schedule is correct (cron syntax)
-2. Check Edge Function logs for errors
-3. Test manual invocation first
-4. Ensure Supabase project is not paused
-
----
-
-## Success Criteria
-
-All tests must pass with the following outcomes:
-
-- ✅ No Stripe operations succeed without proper secrets
-- ✅ All 6 webhook events create/update DB records correctly
-- ✅ Customer Portal opens and allows subscription management
-- ✅ Database triggers block ALL unauthorized publish/renew operations
-- ✅ Direct DB updates are also blocked by triggers
-- ✅ Error Boundary catches and displays errors gracefully
-- ✅ Toast notifications are consistent across the app
-- ✅ Expired listings are automatically archived by cron job
-
----
-
-## Notes
-
-- Run tests in Stripe **test mode** to avoid real charges
-- Use test card numbers: https://stripe.com/docs/testing
-- Always test trigger enforcement with direct DB calls to ensure bypass prevention
-- Verify logs in Supabase Dashboard → Edge Functions for detailed debugging
-
----
-
-**End of Test Plan**
+We build fast, elegant software that converts.
