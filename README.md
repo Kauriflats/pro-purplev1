@@ -129,7 +129,7 @@ VAULTRE_WEBHOOK_TOLERANCE_MS=300000
 
 # Email
 RESEND_API_KEY=...
-EMAIL_FROM="SilverKey Alerts <alerts@silverkeyrealty.com.au>"
+EMAIL_FROM="SilverKey Alerts <info@listhouze.com>"
 
 
 VaultRE Compliance:
@@ -150,7 +150,7 @@ npm run seed
 npm run dev
 
 
-Open http://localhost:5173
+Open http://listhouze.com
 
 Default admin (if seeded): shown in terminal after npm run seed. Change immediately.
 
