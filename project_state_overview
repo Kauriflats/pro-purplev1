@@ -1,0 +1,47 @@
+# Project State Overview
+
+This document summarizes the current functionality, integrations, and database model of the ListHouze platform as represented in this repository.
+
+## Platform & Architecture
+- **Frontend:** React 18 + TypeScript app bootstrapped with Vite. The root `App` component wires `@tanstack/react-query`, `next-themes`, and React Router, wrapping pages with shared layout elements (header, footer, bottom navigation), an onboarding gate, and country-aware routing.  
+- **Styling & UI:** Tailwind CSS with shadcn/ui and Radix primitives for forms, navigation, dialogs, and tooltips.  
+- **State/Data:** Supabase JS client paired with React Query for cached API calls; utilities for Google Maps loading, image handling, CSV export, and notifications.  
+- **Hosting Targets:** Designed for Vercel static build plus serverless functions (`/api`), with Supabase providing auth, Postgres, storage, and Edge Functions.
+
+## Application Surface (Routes & Key Screens)
+- **Public marketplace:** Home page highlights search, featured properties/agents, interactive map, and mortgage calculator; dedicated experiences for buy, rent, sold/leased, map exploration, property detail, book appraisal, services, due diligence, valuation, FAQ, pricing, and contact flows.  
+- **Content:** Blog (with categories/tags), help center (categories and articles), roadmap, and release notes pull structured entries from Supabase tables.  
+- **Authentication & onboarding:** Auth pages, invite acceptance, password reset, and user-type onboarding flows for agencies, independent agents, private listers, and mortgage brokers.  
+- **Portals:**  
+  - **Admin:** Portal shell plus sync/SEO/content tooling.  
+  - **Agency Owner:** Team management, properties, reports, analytics, deleted items, integrations, billing, invites.  
+  - **Agent:** Listings CRUD/import, open homes, inquiries, analytics, profile management.  
+  - **Customer:** Dashboard with saved properties/searches, inquiries, appointments, profile, history.  
+  - **Seller:** Dashboard, listings/properties, inquiry and open-home management.  
+  - **Mortgage:** Broker directory, profile editing, dashboard, billing, home loan discovery.  
+- **Collaboration & communications:** Inbox, notifications center, property workspaces with invite acceptance, and announcement surfaces.
+
+## Integrations & Edge Functions
+Supabase Edge Functions cover operational, billing, and communications tasks:
+- **Property sync & data:** `vaultre-sync` (VaultRE import), `vaultre-webhook`, `rea-scraper`, `generate-sitemap`, `get-maps-key`, `google-maps-proxy`, `geo-detect`, `linz-property-lookup`.  
+- **Identity & onboarding:** Account-type request/approval/cancel/admin-review, agent approval, update-user-role, ABN/NZBN business lookups.  
+- **Billing & payments:** Checkout/eligibility/confirmation, customer portal, billing webhook handlers.  
+- **Messaging & notifications:** Inquiry/open-home/agent-contact emailers, password reset, workspace invites, announcement processing, notification email sender, outbound/inbound webhooks.  
+- **AI & automation:** `ai-assistant` plus auxiliary utility endpoints.  
+CORS is enabled broadly for client calls, and most functions use the Supabase service role for privileged database writes.
+
+## Database Snapshot (Supabase Postgres)
+The migrations define a multi-tenant, RLS-enforced schema. Highlights include:
+- **Identity & governance:** `user_roles` with helper functions (`has_role`, `is_super_admin`), `user_account_type` + requests, `policy_versions`, `user_legal_acceptance`, `cookie_consent`, and audit logs.  
+- **Organizations & agents:** `organizations` with compliance fields (ABN/ACN/NZBN, verification status, licensing), `organization_members`/`team_invites`, `agents` (auto-generated `agent_id_number` sequence and profiles), `agent_affiliations`, and organization-scoped API keys/integrations.  
+- **Property lifecycle:** Core `properties` table with images, agent assignments, status history/timeline, views, saved properties, open homes/appointments with registrations, and property workspaces (documents + membership).  
+- **Leads & CRM:** `inquiries`, message threads/messages with participants, listing feedback, saved searches, and notification templates/logs plus announcement tracking.  
+- **Content & marketing:** Help-site blogs/tags/categories, FAQs, releases with features, roadmap items, announcements, subscribers, and recently sold properties to enrich public pages.  
+- **Mortgage stack:** Broker profiles, leads with assignments/events, enquiry usage metering, verification flows with stored files, and tiered billing fields.  
+- **Integrations & automation:** Sync events and integration-specific logs, outbound webhooks with delivery tracking, API usage logs, and platform settings/feature flags.
+
+## Data Access Patterns
+- Client hooks query Supabase tables directly; e.g., property hooks join `property_images`, support rich filtering, and trigger VaultRE sync via `supabase.functions.invoke`.  
+- React Query caches and normalizes results, while RLS policies protect tenant data. Recent migrations harden policies for open homes, mortgage verification artifacts, announcements, and workspace membership.  
+- Storage policies explicitly guard broker verification uploads by user folder, and agent IDs now derive from a sequence to avoid collisions.
+docs/PROJECT_STATE.md
